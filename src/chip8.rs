@@ -413,9 +413,6 @@ impl Chip8 {
                             self.mem[i] = self.regs[reg];
                             i += 1;
                         }
-                        if self.quirk_memory {
-                            self.i += (y - x + 1) as u16;
-                        }
                     }
                     3 => {
                         // load vx - vy
@@ -426,9 +423,6 @@ impl Chip8 {
                         for reg in (x as usize)..=(y as usize) {
                             self.regs[reg] = self.mem[i];
                             i += 1;
-                        }
-                        if self.quirk_memory {
-                            self.i += (y - x + 1) as u16;
                         }
                     }
                     _ => panic!("Unknown opcode ${:04x}", op),
