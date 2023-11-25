@@ -175,7 +175,10 @@ impl Chip8 {
     }
 
     fn skip_ins(&mut self) {
-        if self.system == Chip8System::XOCHIP && self.mem[self.pc as usize] == 0xf0 && self.mem[self.pc as usize + 1] == 0x00 {
+        if self.system == Chip8System::XOCHIP
+            && self.mem[self.pc as usize] == 0xf0
+            && self.mem[self.pc as usize + 1] == 0x00
+        {
             self.pc += 4;
         } else {
             self.pc += 2;
@@ -238,13 +241,14 @@ impl Chip8 {
                         } else {
                             1
                         };
-                        let plane_mask = 0xff-self.plane;
+                        let plane_mask = 0xff - self.plane;
                         for _ in 0..scroll_times {
                             for col in 0..WIDTH {
                                 for row_from_bottom in 0..(HEIGHT - n as usize) {
                                     let draw_offs = (HEIGHT - 1 - row_from_bottom) * WIDTH + col;
                                     let src_offs = draw_offs - (WIDTH * n as usize);
-                                    self.vram[draw_offs] = (self.vram[draw_offs] & plane_mask) | (self.vram[src_offs] & self.plane);
+                                    self.vram[draw_offs] = (self.vram[draw_offs] & plane_mask)
+                                        | (self.vram[src_offs] & self.plane);
                                 }
                                 for i in 0..n as usize {
                                     self.vram[col + i * WIDTH] &= plane_mask;
@@ -265,13 +269,14 @@ impl Chip8 {
                         } else {
                             1
                         };
-                        let plane_mask = 0xff-self.plane;
+                        let plane_mask = 0xff - self.plane;
                         for _ in 0..scroll_times {
                             for col in 0..WIDTH {
                                 for row in 0..(HEIGHT - n as usize) {
                                     let draw_offs = row * WIDTH + col;
                                     let src_offs = draw_offs + (WIDTH * n as usize);
-                                    self.vram[draw_offs] = (self.vram[draw_offs] & plane_mask) | (self.vram[src_offs] & self.plane);
+                                    self.vram[draw_offs] = (self.vram[draw_offs] & plane_mask)
+                                        | (self.vram[src_offs] & self.plane);
                                 }
                                 let start_row = HEIGHT - n as usize;
                                 for i in 0..n as usize {
@@ -302,13 +307,14 @@ impl Chip8 {
                         } else {
                             1
                         };
-                        let plane_mask = 0xff-self.plane;
+                        let plane_mask = 0xff - self.plane;
                         for _ in 0..scroll_times {
                             for row in 0..HEIGHT {
                                 for col_from_right in 0..(WIDTH - 4) {
                                     let draw_offs = row * WIDTH + (WIDTH - 1 - col_from_right);
                                     let src_offs = draw_offs - 4;
-                                    self.vram[draw_offs] = (self.vram[draw_offs] & plane_mask) | (self.vram[src_offs] & self.plane);
+                                    self.vram[draw_offs] = (self.vram[draw_offs] & plane_mask)
+                                        | (self.vram[src_offs] & self.plane);
                                 }
                                 let draw_offs = row * WIDTH;
                                 for i in 0..4 {
@@ -327,13 +333,14 @@ impl Chip8 {
                         } else {
                             1
                         };
-                        let plane_mask = 0xff-self.plane;
+                        let plane_mask = 0xff - self.plane;
                         for _ in 0..scroll_times {
                             for row in 0..HEIGHT {
                                 for col in 0..(WIDTH - 4) {
                                     let draw_offs = row * WIDTH + col;
                                     let src_offs = draw_offs + 4;
-                                    self.vram[draw_offs] = (self.vram[draw_offs] & plane_mask) | (self.vram[src_offs] & self.plane);
+                                    self.vram[draw_offs] = (self.vram[draw_offs] & plane_mask)
+                                        | (self.vram[src_offs] & self.plane);
                                 }
                                 let draw_offs = (row + 1) * WIDTH - 4;
                                 for i in 0..4 {
