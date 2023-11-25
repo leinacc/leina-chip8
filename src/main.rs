@@ -40,6 +40,7 @@ fn get_file_as_byte_vec(filename: &String) -> Vec<u8> {
 }
 
 struct System {
+    pub reset_pressed: bool,
     pub step_pressed: bool,
     pub captured_instant: Instant,
     pub ins_per_frame: i32,
@@ -48,6 +49,7 @@ struct System {
 impl System {
     fn new() -> Self {
         Self {
+            reset_pressed: false,
             step_pressed: false,
             captured_instant: Instant::now(),
             ins_per_frame: 200000,
@@ -76,7 +78,7 @@ fn main() -> Result<(), Error> {
 
     let mut chip8 = Chip8::new();
     let rom = get_file_as_byte_vec(rom_path);
-    chip8.load_rom(rom);
+    chip8.load_rom(rom.clone());
 
     // Init some gui-related objects
     let mut breakpoints = Breakpoints::new();
@@ -116,6 +118,13 @@ fn main() -> Result<(), Error> {
 
     event_loop.run(move |event, _, control_flow| {
         if input.update(&event) {
+            if system.reset_pressed {
+                system.reset_pressed = false;
+                system.step_pressed = false;
+                chip8 = Chip8::new();
+                chip8.load_rom(rom.clone());
+            }
+
             system.captured_instant = Instant::now();
 
             // Close events

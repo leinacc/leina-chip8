@@ -214,8 +214,18 @@ impl Gui {
                         ui.close_menu();
                     };
 
+                    if ui.button("Speed").clicked() {
+                        self.frame_time_open = true;
+                        ui.close_menu();
+                    };
+
                     if ui.button("Memory Viewer").clicked() {
                         self.mem_editor_open = true;
+                        ui.close_menu();
+                    };
+
+                    if ui.button("Quirks").clicked() {
+                        self.quirks_open = true;
                         ui.close_menu();
                     };
 
@@ -242,6 +252,9 @@ impl Gui {
             .open(&mut self.controls_open)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    if ui.button("Reset").clicked() {
+                        system.reset_pressed = true;
+                    }
                     if ui
                         .button(if chip8.paused { "Unpause" } else { "Pause" })
                         .clicked()
@@ -304,6 +317,7 @@ impl Gui {
                     &mut chip8.quirk_scroll_full_lores,
                     "Scroll full pixels in lores",
                 );
+                ui.checkbox(&mut chip8.quirk_16_colors, "16 colors");
             });
 
         vram_editor.window_ui(
