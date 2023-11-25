@@ -1,6 +1,6 @@
 use crate::breakpoints::Breakpoints;
 use crate::chip8::Chip8;
-use crate::constants::{HEIGHT, TICKS_PER_FRAME, WIDTH};
+use crate::constants::{HEIGHT, WIDTH};
 use crate::disassembler::Disassembler;
 use crate::gui::Framework;
 use crate::keyboard::Keyboard;
@@ -13,6 +13,7 @@ use pixels::{Error, Pixels, SurfaceTexture};
 use std::env;
 use std::fs::{metadata, File};
 use std::io::Read;
+use std::time::Instant;
 use winit::{
     dpi::LogicalSize,
     event::{Event, VirtualKeyCode},
@@ -39,13 +40,17 @@ fn get_file_as_byte_vec(filename: &String) -> Vec<u8> {
 }
 
 struct System {
-    step_pressed: bool,
+    pub step_pressed: bool,
+    pub captured_instant: Instant,
+    pub ins_per_frame: i32,
 }
 
 impl System {
     fn new() -> Self {
         Self {
             step_pressed: false,
+            captured_instant: Instant::now(),
+            ins_per_frame: 200000,
         }
     }
 }
@@ -56,7 +61,7 @@ fn main() -> Result<(), Error> {
     let mut input = WinitInputHelper::new();
     let window = {
         let size = LogicalSize::new(WIDTH as f64, HEIGHT as f64);
-        let scaled_size = LogicalSize::new(WIDTH as f64 * 15.0, HEIGHT as f64 * 15.0);
+        let scaled_size = LogicalSize::new(WIDTH as f64 * 10.0, HEIGHT as f64 * 20.0);
         WindowBuilder::new()
             .with_title("CHIP-8")
             .with_inner_size(scaled_size)
@@ -84,7 +89,7 @@ fn main() -> Result<(), Error> {
     let mut vram_editor = MemoryEditor::new()
         .with_address_range("VRAM", 0..WIDTH * HEIGHT)
         .with_window_title("VRAM Viewer");
-    vram_editor.options.column_count = 128;
+    vram_editor.options.column_count = WIDTH;
     vram_editor.options.is_options_collapsed = true;
     vram_editor.options.is_resizable_column = false;
     vram_editor.options.show_ascii = false;
@@ -107,10 +112,12 @@ fn main() -> Result<(), Error> {
         (pixels, framework)
     };
 
-    let mut ticks_left = TICKS_PER_FRAME;
+    let mut ticks_left = system.ins_per_frame;
 
     event_loop.run(move |event, _, control_flow| {
         if input.update(&event) {
+            system.captured_instant = Instant::now();
+
             // Close events
             if input.key_pressed(VirtualKeyCode::Escape) || input.close_requested() {
                 *control_flow = ControlFlow::Exit;
@@ -159,7 +166,7 @@ fn main() -> Result<(), Error> {
             }
 
             if ticks_left == 0 {
-                ticks_left = TICKS_PER_FRAME;
+                ticks_left = system.ins_per_frame;
                 if chip8.delay != 0 {
                     chip8.delay -= 1;
                 }

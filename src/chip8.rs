@@ -158,10 +158,10 @@ impl Chip8 {
     pub fn draw(&self, frame: &mut [u8]) {
         for (c, pix) in self.vram.iter().zip(frame.chunks_exact_mut(4)) {
             let color = match c {
-                0 => [0x00, 0x00, 0x00, 0xff],
+                0 => [0x22, 0x22, 0x22, 0xff],
                 1 => [0xff, 0xff, 0xff, 0xff],
-                2 => [0xaa, 0xaa, 0xaa, 0xff],
-                3 => [0x55, 0x55, 0x55, 0xff],
+                2 => [0x00, 0x44, 0xaa, 0xff],
+                3 => [0xaa, 0x55, 0x00, 0xff],
                 _ => panic!("Invalid color"),
             };
             pix.copy_from_slice(&color);
@@ -541,16 +541,16 @@ impl Chip8 {
                 // sprite vx vy N
                 let mut xord = false;
                 let mut startx = self.regs[x as usize] as usize;
-                let mut drawy = self.regs[y as usize] as usize;
+                let mut starty = self.regs[y as usize] as usize;
 
                 // Emulate chip-8 as if schip/xo-chip
                 if !self.hires {
                     startx *= 2;
-                    drawy *= 2;
+                    starty *= 2;
                 }
 
-                startx %= 128;
-                drawy %= 64;
+                startx %= WIDTH;
+                starty %= HEIGHT;
 
                 let mut src = self.i as usize;
                 let (byte_width, num_bytes) = if n == 0 { (2, 32) } else { (1, n as usize) };
@@ -558,7 +558,7 @@ impl Chip8 {
                 let mut planeid = 1;
                 while planeid != 3 {
                     if (self.plane & planeid) != 0 {
-                        let mut starty = drawy;
+                        let mut drawy = starty;
                         let mut i: usize = 0;
                         while i < num_bytes {
                             let mut drawx = startx;
@@ -572,13 +572,13 @@ impl Chip8 {
                                     let bit_set = (byte & 0x80) != 0;
                                     byte <<= 1;
 
-                                    if self.quirk_clipping && drawx >= 128 {
+                                    if self.quirk_clipping && drawx >= WIDTH {
                                         break;
                                     }
 
                                     // no clip, ie wrap
-                                    drawx %= 128;
-                                    let draw_offs = starty * WIDTH + drawx;
+                                    drawx %= WIDTH;
+                                    let draw_offs = drawy * WIDTH + drawx;
                                     if bit_set {
                                         if self.hires {
                                             if (self.vram[draw_offs] & planeid) != 0 {
@@ -607,12 +607,12 @@ impl Chip8 {
                                 }
                             }
 
-                            starty += if self.hires { 1 } else { 2 };
-                            if starty == 64 {
+                            drawy += if self.hires { 1 } else { 2 };
+                            if drawy == HEIGHT {
                                 if self.quirk_clipping {
                                     break;
                                 }
-                                starty = 0;
+                                drawy = 0;
                             }
                         }
                         src += num_bytes;

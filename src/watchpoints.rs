@@ -1,17 +1,10 @@
 use egui::Ui;
 
-#[derive(Copy, Clone, PartialEq)]
-pub enum MemIO {
-    MEM,
-    VRAM,
-}
-
 pub struct Watchpoint {
     pub addr_start: u16,
     pub addr_end: u16,
     pub read: bool,
     pub write: bool,
-    pub mem_io: MemIO,
 }
 
 pub struct Watchpoints {
@@ -19,7 +12,6 @@ pub struct Watchpoints {
     addr_end: String,
     read: bool,
     write: bool,
-    mem_io: MemIO,
     watchpoints: Vec<Watchpoint>,
 }
 
@@ -30,7 +22,6 @@ impl Watchpoints {
             addr_end: String::from(""),
             read: false,
             write: false,
-            mem_io: MemIO::MEM,
             watchpoints: vec![],
         }
     }
@@ -58,10 +49,6 @@ impl Watchpoints {
             ui.checkbox(&mut self.read, "Read");
             ui.checkbox(&mut self.write, "Write");
         });
-        ui.horizontal(|ui| {
-            ui.radio_value(&mut self.mem_io, MemIO::MEM, "Memory");
-            ui.radio_value(&mut self.mem_io, MemIO::VRAM, "VRAM");
-        });
 
         if ui.button("Add watchpoint").clicked() {
             if self.addr_start.len() > 0 && self.addr_end.len() > 0 {
@@ -72,7 +59,6 @@ impl Watchpoints {
                     addr_end: addr_end,
                     read: self.read,
                     write: self.write,
-                    mem_io: self.mem_io,
                 });
             }
         }
@@ -93,11 +79,6 @@ impl Watchpoints {
                     if watchpoint.write {
                         ui.label("Write");
                     }
-                    if watchpoint.mem_io == MemIO::MEM {
-                        ui.label("Memory");
-                    } else {
-                        ui.label("VRAM");
-                    }
                     if ui.button("Remove").clicked() {
                         removed = Some(i);
                     }
@@ -112,19 +93,13 @@ impl Watchpoints {
         }
     }
 
-    pub fn check(&mut self, addr: u16, is_read: bool, is_mem: bool) -> bool {
+    pub fn check(&mut self, addr: u16, is_read: bool) -> bool {
         for watchpoint in &self.watchpoints {
             if addr >= watchpoint.addr_start && addr <= watchpoint.addr_end {
                 if is_read && !watchpoint.read {
                     continue;
                 }
                 if !is_read && !watchpoint.write {
-                    continue;
-                }
-                if is_mem && watchpoint.mem_io != MemIO::MEM {
-                    continue;
-                }
-                if !is_mem && watchpoint.mem_io != MemIO::VRAM {
                     continue;
                 }
                 return true;

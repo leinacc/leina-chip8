@@ -30,6 +30,7 @@ struct Gui {
     breakpoints_open: bool,
     controls_open: bool,
     disassembler_open: bool,
+    frame_time_open: bool,
     mem_editor_open: bool,
     quirks_open: bool,
     vram_editor_open: bool,
@@ -172,11 +173,12 @@ impl Gui {
     /// Create a `Gui`.
     fn new() -> Self {
         Self {
-            breakpoints_open: true,
+            breakpoints_open: false,
             controls_open: true,
             disassembler_open: false,
+            frame_time_open: true,
             mem_editor_open: false,
-            quirks_open: true,
+            quirks_open: false,
             vram_editor_open: false,
             watchpoints_open: false,
         }
@@ -321,6 +323,25 @@ impl Gui {
             .open(&mut self.watchpoints_open)
             .show(ctx, |ui| {
                 watchpoints.display(ui);
+            });
+
+        egui::Window::new("Speed")
+            .open(&mut self.frame_time_open)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "Frame time: {:?}",
+                    system.captured_instant.elapsed()
+                ));
+                let ipf_label = ui.label(String::from("Instructions per frame:"));
+                let mut ipf_text = format!("{}", system.ins_per_frame);
+                ui.text_edit_singleline(&mut ipf_text)
+                    .labelled_by(ipf_label.id);
+                match i32::from_str_radix(&ipf_text, 10) {
+                    Ok(val) => {
+                        system.ins_per_frame = val;
+                    }
+                    Err(_) => (),
+                };
             });
     }
 }
