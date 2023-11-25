@@ -202,7 +202,7 @@ impl Chip8 {
                     0xf => [0x00, 0x88, 0x88, 0xff],
                     _ => panic!("Invalid color"),
                 },
-                false => match c {
+                false => match c & 3 {
                     0 => [0x22, 0x22, 0x22, 0xff],
                     1 => [0xff, 0xff, 0xff, 0xff],
                     2 => [0x00, 0x44, 0xaa, 0xff],
