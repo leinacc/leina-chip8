@@ -29,9 +29,9 @@ pub struct Chip8 {
     pub wait_vblank: bool,
     pub hires: bool,
     rng: ThreadRng,
-    plane: u8,
-    audio_buf: [u8; 16],
-    pitch: u8,
+    pub plane: u8,
+    pub audio_buf: [u8; 16],
+    pub pitch: u8,
 
     pub paused: bool,
     pub keys_held: [bool; 16],
@@ -277,16 +277,7 @@ impl Chip8 {
             0xd => {
                 // sprite vx vy N
                 let num_bytes = if n == 0 { 32 } else { n };
-
-                // num_bytes bytes are read from per plane
-                let mut total_bytes = 0;
-                let mut planeid = 1;
-                while planeid < 16 {
-                    if (self.plane & planeid) != 0 {
-                        total_bytes += num_bytes;
-                    }
-                    planeid *= 2;
-                }
+                let total_bytes = num_bytes * self.plane.count_ones() as u16;
 
                 for i in 0..total_bytes {
                     ret.push((self.i + i, true));

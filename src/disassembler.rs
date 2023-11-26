@@ -490,6 +490,8 @@ impl Disassembler {
                     .color(WHITE_COLOR)
                     .text_style(MONOSPACE.clone()),
             );
+        });
+        ui.horizontal(|ui| {
             ui.label(
                 RichText::new("Hi-res:")
                     .color(MNEM_COLOR)
@@ -500,7 +502,53 @@ impl Disassembler {
                     .color(WHITE_COLOR)
                     .text_style(MONOSPACE.clone()),
             );
+            ui.label(
+                RichText::new("Plane:")
+                    .color(MNEM_COLOR)
+                    .text_style(MONOSPACE.clone()),
+            );
+            ui.label(
+                RichText::new(format!("{}", chip8.plane))
+                    .color(WHITE_COLOR)
+                    .text_style(MONOSPACE.clone()),
+            );
+            ui.label(
+                RichText::new("Pitch:")
+                    .color(MNEM_COLOR)
+                    .text_style(MONOSPACE.clone()),
+            );
+            ui.label(
+                RichText::new(format!("{}", chip8.pitch))
+                    .color(WHITE_COLOR)
+                    .text_style(MONOSPACE.clone()),
+            );
         });
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Audio:")
+                    .color(MNEM_COLOR)
+                    .text_style(MONOSPACE.clone()),
+            );
+        });
+        ui.horizontal(|ui| {
+            for b in chip8.audio_buf[..8].iter() {
+                ui.label(
+                    RichText::new(format!("{:02x}", *b))
+                        .color(WHITE_COLOR)
+                        .text_style(MONOSPACE.clone()),
+                );
+            }
+        });
+        ui.horizontal(|ui| {
+            for b in chip8.audio_buf[8..16].iter() {
+                ui.label(
+                    RichText::new(format!("{:02x}", *b))
+                        .color(WHITE_COLOR)
+                        .text_style(MONOSPACE.clone()),
+                );
+            }
+        });
+        // todo: save file bytes
         ui.separator();
 
         for reg_row in 0..4 {
@@ -531,22 +579,34 @@ impl Disassembler {
                     .text_style(MONOSPACE.clone()),
             );
         });
-        for i in 0..8 {
-            ui.horizontal(|ui| {
-                if (i as u8) == chip8.sp {
-                    ui.label(
-                        RichText::new("->")
-                            .color(MNEM_COLOR)
-                            .text_style(MONOSPACE.clone()),
-                    );
-                }
-                ui.label(
-                    RichText::new(format!("${:03x}", chip8.stack[i]))
-                        .color(WHITE_COLOR)
-                        .text_style(MONOSPACE.clone()),
-                );
-            });
-        }
+        ui.horizontal(|ui| {
+            for j in 0..4 {
+                ui.vertical(|ui| {
+                    for i in j * 4..(j + 1) * 4 {
+                        ui.horizontal(|ui| {
+                            if (i as u8) == chip8.sp {
+                                ui.label(
+                                    RichText::new("->")
+                                        .color(MNEM_COLOR)
+                                        .text_style(MONOSPACE.clone()),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new("  ")
+                                        .color(MNEM_COLOR)
+                                        .text_style(MONOSPACE.clone()),
+                                );
+                            }
+                            ui.label(
+                                RichText::new(format!("${:03x}", chip8.stack[i]))
+                                    .color(WHITE_COLOR)
+                                    .text_style(MONOSPACE.clone()),
+                            );
+                        });
+                    }
+                });
+            }
+        });
         ui.separator();
 
         for i in 0..self.lines.len() {
