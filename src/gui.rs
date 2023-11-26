@@ -332,7 +332,6 @@ impl Gui {
             },
         );
 
-        // todo: clone chip8
         egui::Window::new("Watchpoints")
             .open(&mut self.watchpoints_open)
             .show(ctx, |ui| {
