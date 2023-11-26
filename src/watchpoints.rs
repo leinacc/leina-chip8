@@ -12,7 +12,7 @@ pub struct Watchpoints {
     addr_end: String,
     read: bool,
     write: bool,
-    watchpoints: Vec<Watchpoint>,
+    pub watchpoints: Vec<Watchpoint>,
 }
 
 impl Watchpoints {

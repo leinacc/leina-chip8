@@ -162,11 +162,13 @@ fn main() -> Result<(), Error> {
                 ticks_left = 0;
             } else {
                 while ticks_left != 0 {
-                    let accesses = chip8.check_mem_access();
-                    if watchpoints.check_mem_access(accesses) {
-                        chip8.paused = true;
-                        ticks_left = 0;
-                        break;
+                    if !watchpoints.watchpoints.is_empty() {
+                        let accesses = chip8.check_mem_access();
+                        if watchpoints.check_mem_access(accesses) {
+                            chip8.paused = true;
+                            ticks_left = 0;
+                            break;
+                        }
                     }
 
                     chip8.step();
