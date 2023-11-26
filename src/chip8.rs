@@ -233,6 +233,102 @@ impl Chip8 {
         }
     }
 
+    pub fn check_mem_access(&self) -> Vec<(u16, bool)> {
+        // This can only ever set a reg
+        if self.halted {
+            return vec![];
+        }
+
+        // addr, is_read
+        let mut ret = vec![];
+
+        let op =
+            ((self.mem[self.pc as usize] as u16) << 8) | (self.mem[self.pc as usize + 1] as u16);
+
+        let n0 = op >> 12;
+        let x = (op >> 8) & 0xf;
+        let y = (op >> 4) & 0xf;
+        // let nnn = op & 0xfff;
+        let nn = op & 0xff;
+        let n = op & 0xf;
+
+        match n0 {
+            0x5 => {
+                match n {
+                    2 => {
+                        // save vx - vy
+                        if self.system == Chip8System::XOCHIP {
+                            for i in 0..=(y - x) {
+                                ret.push((self.i + i, false));
+                            }
+                        }
+                    }
+                    3 => {
+                        // load vx - vy
+                        if self.system == Chip8System::XOCHIP {
+                            for i in 0..=(y - x) {
+                                ret.push((self.i + i, true));
+                            }
+                        }
+                    }
+                    _ => (),
+                }
+            }
+            0xd => {
+                // sprite vx vy N
+                let num_bytes = if n == 0 { 32 } else { n };
+
+                // num_bytes bytes are read from per plane
+                let mut total_bytes = 0;
+                let mut planeid = 1;
+                while planeid < 16 {
+                    if (self.plane & planeid) != 0 {
+                        total_bytes += num_bytes;
+                    }
+                    planeid *= 2;
+                }
+
+                for i in 0..total_bytes {
+                    ret.push((self.i + i, true));
+                }
+            }
+            0xf => {
+                match nn {
+                    0x02 => {
+                        if x == 0 {
+                            // audio
+                            for i in 0..16 {
+                                ret.push((self.i + i, true));
+                            }
+                        }
+                    }
+                    0x33 => {
+                        // bcd
+                        ret.push((self.i, false));
+                        ret.push((self.i + 1, false));
+                        ret.push((self.i + 2, false));
+                    }
+                    0x55 => {
+                        // save vx
+                        for i in 0..=x {
+                            ret.push((self.i + i, false));
+                        }
+                    }
+                    0x65 => {
+                        // load vx
+                        for i in 0..=x {
+                            ret.push((self.i + i, true));
+                        }
+                    }
+                    _ => (),
+                }
+            }
+            _ => (),
+        }
+
+        ret
+    }
+
     pub fn step(&mut self) {
         if self.halted {
             if !self.halt_wait_for_release {
@@ -726,6 +822,7 @@ impl Chip8 {
                             for i in 0..16 {
                                 self.audio_buf[i] = self.mem[self.i as usize + i];
                             }
+                            // todo: audio
                         }
                     }
                     0x07 => {

@@ -93,7 +93,18 @@ impl Watchpoints {
         }
     }
 
-    pub fn check(&mut self, addr: u16, is_read: bool) -> bool {
+    pub fn check_mem_access(&mut self, accesses: Vec<(u16, bool)>) -> bool {
+        let mut hit_watchpoint = false;
+        for (addr, is_read) in accesses {
+            if self.check(addr, is_read) {
+                hit_watchpoint = true;
+                break;
+            }
+        }
+        return hit_watchpoint;
+    }
+
+    fn check(&mut self, addr: u16, is_read: bool) -> bool {
         for watchpoint in &self.watchpoints {
             if addr >= watchpoint.addr_start && addr <= watchpoint.addr_end {
                 if is_read && !watchpoint.read {
