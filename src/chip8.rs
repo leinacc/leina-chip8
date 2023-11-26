@@ -1,7 +1,9 @@
-use crate::constants::{HEIGHT, WIDTH};
+use crate::constants::{FLAGS_FNAME, HEIGHT, WIDTH};
 
 use rand::rngs::ThreadRng;
 use rand::Rng;
+use std::fs::File;
+use std::io::prelude::*;
 
 #[derive(PartialEq)]
 pub enum Chip8System {
@@ -800,18 +802,75 @@ impl Chip8 {
                         }
                     }
                     0x75 => {
-                        // todo: saveflags vx
+                        // saveflags vx
                         if self.system == Chip8System::CHIP8 {
                             return;
                         }
-                        panic!("Implement saveflags");
+                        let x = if self.system == Chip8System::XOCHIP {
+                            x
+                        } else {
+                            x & 7
+                        };
+
+                        // Get the current 16 flags, if the file exists
+                        let mut buffer = [0; 16];
+                        match File::open(FLAGS_FNAME) {
+                            Ok(mut file) => {
+                                file.read_exact(&mut buffer).expect(&format!(
+                                    "Couldn't read {} bytes from {}",
+                                    x + 1,
+                                    FLAGS_FNAME
+                                ));
+                            }
+                            _ => (),
+                        }
+
+                        // Override with the required regs
+                        for i in 0..=x as usize {
+                            buffer[i] = self.regs[i];
+                        }
+
+                        // Save the flags
+                        let mut file = File::create(FLAGS_FNAME)
+                            .expect(&format!("Couldn't create {}", FLAGS_FNAME));
+                        file.write_all(&buffer)
+                            .expect(&format!("Couldn't save file {}", FLAGS_FNAME));
                     }
                     0x85 => {
-                        // todo: loadflags vx
+                        // loadflags vx
                         if self.system == Chip8System::CHIP8 {
                             return;
                         }
-                        panic!("Implement loadflags");
+                        let x = if self.system == Chip8System::XOCHIP {
+                            x
+                        } else {
+                            x & 7
+                        };
+
+                        match File::open(FLAGS_FNAME) {
+                            Ok(mut file) => {
+                                // If the file exist, load its contents in the required regs
+                                let mut buffer = [0; 16];
+                                file.read_exact(&mut buffer).expect(&format!(
+                                    "Couldn't read {} bytes from {}",
+                                    x + 1,
+                                    FLAGS_FNAME
+                                ));
+                                for i in 0..=x as usize {
+                                    self.regs[i] = buffer[i];
+                                }
+                            }
+                            Err(_) => {
+                                // Else init the file and clear the regs
+                                let mut file = File::create(FLAGS_FNAME)
+                                    .expect(&format!("Couldn't create {}", FLAGS_FNAME));
+                                file.write_all(&[0; 16])
+                                    .expect(&format!("Couldn't init file {}", FLAGS_FNAME));
+                                for i in 0..=x as usize {
+                                    self.regs[i] = 0;
+                                }
+                            }
+                        }
                     }
                     _ => panic!("Unknown opcode ${:04x}", op),
                 }
