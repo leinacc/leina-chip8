@@ -320,11 +320,10 @@ impl Gui {
                 ui.checkbox(&mut chip8.quirk_16_colors, "16 colors");
             });
 
-        // todo: do this per-plane, or merge the planes
         vram_editor.window_ui(
             ctx,
             &mut self.vram_editor_open,
-            &mut chip8.planes[0],
+            &mut chip8.vram,
             |mem, address| mem.get(address).copied(),
             |mem, address, val| {
                 if address < WIDTH * HEIGHT {

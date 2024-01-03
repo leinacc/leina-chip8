@@ -15,7 +15,7 @@ pub enum Chip8System {
 
 pub struct Chip8 {
     pub mem: [u8; 0x10000],
-    pub planes: [[u8; WIDTH * HEIGHT]; 4],
+    pub vram: [u8; WIDTH * HEIGHT],
     pub i: u16,
     pub pc: u16,
     pub regs: [u8; 16],
@@ -52,7 +52,7 @@ impl Chip8 {
     pub fn new() -> Self {
         let mut ret = Self {
             mem: [0; 0x10000],
-            planes: [[0; WIDTH * HEIGHT]; 4],
+            vram: [0; WIDTH * HEIGHT],
             i: 0,
             pc: 0x200,
             regs: [0; 16],
@@ -183,9 +183,7 @@ impl Chip8 {
     }
 
     pub fn draw(&self, frame: &mut [u8]) {
-        for (i, pix) in frame.chunks_exact_mut(4).enumerate() {
-            let c = self.planes[0][i] + self.planes[1][i]*2 + self.planes[2][i]*4 + self.planes[3][i]*8;
-
+        for (c, pix) in self.vram.iter().zip(frame.chunks_exact_mut(4)) {
             let color = match self.quirk_16_colors {
                 true => match c {
                     0x0 => [0x00, 0x00, 0x00, 0xff],
@@ -378,19 +376,17 @@ impl Chip8 {
                         } else {
                             1
                         };
-                        for planeid in 0..4 {
-                            if (self.plane & (1 << planeid)) != 0 {
-                                for _ in 0..scroll_times {
-                                    for col in 0..WIDTH {
-                                        for row_from_bottom in 0..(HEIGHT - n as usize) {
-                                            let draw_offs = (HEIGHT - 1 - row_from_bottom) * WIDTH + col;
-                                            let src_offs = draw_offs - (WIDTH * n as usize);
-                                            self.planes[planeid][draw_offs] = self.planes[planeid][src_offs];
-                                        }
-                                        for i in 0..n as usize {
-                                            self.planes[planeid][col + i * WIDTH] = 0;
-                                        }
-                                    }
+                        let plane_mask = 0xff - self.plane;
+                        for _ in 0..scroll_times {
+                            for col in 0..WIDTH {
+                                for row_from_bottom in 0..(HEIGHT - n as usize) {
+                                    let draw_offs = (HEIGHT - 1 - row_from_bottom) * WIDTH + col;
+                                    let src_offs = draw_offs - (WIDTH * n as usize);
+                                    self.vram[draw_offs] = (self.vram[draw_offs] & plane_mask)
+                                        | (self.vram[src_offs] & self.plane);
+                                }
+                                for i in 0..n as usize {
+                                    self.vram[col + i * WIDTH] &= plane_mask;
                                 }
                             }
                         }
@@ -408,30 +404,27 @@ impl Chip8 {
                         } else {
                             1
                         };
-                        for planeid in 0..4 {
-                            if (self.plane & (1 << planeid)) != 0 {
-                                for _ in 0..scroll_times {
-                                    for col in 0..WIDTH {
-                                        for row in 0..(HEIGHT - n as usize) {
-                                            let draw_offs = row * WIDTH + col;
-                                            let src_offs = draw_offs + (WIDTH * n as usize);
-                                            self.planes[planeid][draw_offs] = self.planes[planeid][src_offs];
-                                        }
-                                        let start_row = HEIGHT - n as usize;
-                                        for i in 0..n as usize {
-                                            self.planes[planeid][col + (start_row + i) * WIDTH] = 0;
-                                        }
-                                    }
+                        let plane_mask = 0xff - self.plane;
+                        for _ in 0..scroll_times {
+                            for col in 0..WIDTH {
+                                for row in 0..(HEIGHT - n as usize) {
+                                    let draw_offs = row * WIDTH + col;
+                                    let src_offs = draw_offs + (WIDTH * n as usize);
+                                    self.vram[draw_offs] = (self.vram[draw_offs] & plane_mask)
+                                        | (self.vram[src_offs] & self.plane);
+                                }
+                                let start_row = HEIGHT - n as usize;
+                                for i in 0..n as usize {
+                                    self.vram[col + (start_row + i) * WIDTH] &= plane_mask;
                                 }
                             }
                         }
                     }
                     0x0e0 => {
                         // clear
-                        for planeid in 0..4 {
-                            for i in 0..WIDTH * HEIGHT {
-                                self.planes[planeid][i] = 0;
-                            }
+                        let mask = 0xff - self.plane;
+                        for i in 0..WIDTH * HEIGHT {
+                            self.vram[i] &= mask;
                         }
                     }
                     0x0ee => {
@@ -449,20 +442,18 @@ impl Chip8 {
                         } else {
                             1
                         };
-                        for planeid in 0..4 {
-                            if (self.plane & (1 << planeid)) != 0 {
-                                for _ in 0..scroll_times {
-                                    for row in 0..HEIGHT {
-                                        for col_from_right in 0..(WIDTH - 4) {
-                                            let draw_offs = row * WIDTH + (WIDTH - 1 - col_from_right);
-                                            let src_offs = draw_offs - 4;
-                                            self.planes[planeid][draw_offs] = self.planes[planeid][src_offs];
-                                        }
-                                        let draw_offs = row * WIDTH;
-                                        for i in 0..4 {
-                                            self.planes[planeid][draw_offs + i] = 0;
-                                        }
-                                    }
+                        let plane_mask = 0xff - self.plane;
+                        for _ in 0..scroll_times {
+                            for row in 0..HEIGHT {
+                                for col_from_right in 0..(WIDTH - 4) {
+                                    let draw_offs = row * WIDTH + (WIDTH - 1 - col_from_right);
+                                    let src_offs = draw_offs - 4;
+                                    self.vram[draw_offs] = (self.vram[draw_offs] & plane_mask)
+                                        | (self.vram[src_offs] & self.plane);
+                                }
+                                let draw_offs = row * WIDTH;
+                                for i in 0..4 {
+                                    self.vram[draw_offs + i] &= plane_mask;
                                 }
                             }
                         }
@@ -477,20 +468,18 @@ impl Chip8 {
                         } else {
                             1
                         };
-                        for planeid in 0..4 {
-                            if (self.plane & (1 << planeid)) != 0 {
-                                for _ in 0..scroll_times {
-                                    for row in 0..HEIGHT {
-                                        for col in 0..(WIDTH - 4) {
-                                            let draw_offs = row * WIDTH + col;
-                                            let src_offs = draw_offs + 4;
-                                            self.planes[planeid][draw_offs] = self.planes[planeid][src_offs];
-                                        }
-                                        let draw_offs = (row + 1) * WIDTH - 4;
-                                        for i in 0..4 {
-                                            self.planes[planeid][draw_offs + i] = 0;
-                                        }
-                                    }
+                        let plane_mask = 0xff - self.plane;
+                        for _ in 0..scroll_times {
+                            for row in 0..HEIGHT {
+                                for col in 0..(WIDTH - 4) {
+                                    let draw_offs = row * WIDTH + col;
+                                    let src_offs = draw_offs + 4;
+                                    self.vram[draw_offs] = (self.vram[draw_offs] & plane_mask)
+                                        | (self.vram[src_offs] & self.plane);
+                                }
+                                let draw_offs = (row + 1) * WIDTH - 4;
+                                for i in 0..4 {
+                                    self.vram[draw_offs + i] &= plane_mask;
                                 }
                             }
                         }
@@ -701,8 +690,9 @@ impl Chip8 {
                 let mut src = self.i as usize;
                 let (byte_width, num_bytes) = if n == 0 { (2, 32) } else { (1, n as usize) };
 
-                for planeid in 0..4 {
-                    if (self.plane & (1 << planeid)) != 0 {
+                let mut planeid = 1;
+                while planeid < 16 {
+                    if (self.plane & planeid) != 0 {
                         let mut drawy = starty;
                         let mut i: usize = 0;
                         while i < num_bytes {
@@ -726,24 +716,24 @@ impl Chip8 {
                                     let draw_offs = drawy * WIDTH + drawx;
                                     if bit_set {
                                         if self.hires {
-                                            if (self.planes[planeid][draw_offs]) != 0 {
+                                            if (self.vram[draw_offs] & planeid) != 0 {
                                                 xord = true;
                                             }
-                                            self.planes[planeid][draw_offs] ^= 1;
+                                            self.vram[draw_offs] ^= planeid;
                                         } else {
                                             // plot 2x2
-                                            if ((self.planes[planeid][draw_offs] & 1)
-                                                + (self.planes[planeid][draw_offs + 1] & 1)
-                                                + (self.planes[planeid][draw_offs + WIDTH] & 1)
-                                                + (self.planes[planeid][draw_offs + WIDTH + 1] & 1))
+                                            if ((self.vram[draw_offs] & planeid)
+                                                + (self.vram[draw_offs + 1] & planeid)
+                                                + (self.vram[draw_offs + WIDTH] & planeid)
+                                                + (self.vram[draw_offs + WIDTH + 1] & planeid))
                                                 != 0
                                             {
                                                 xord = true;
                                             }
-                                            self.planes[planeid][draw_offs] ^= 1;
-                                            self.planes[planeid][draw_offs + 1] ^= 1;
-                                            self.planes[planeid][draw_offs + WIDTH] ^= 1;
-                                            self.planes[planeid][draw_offs + WIDTH + 1] ^= 1;
+                                            self.vram[draw_offs] ^= planeid;
+                                            self.vram[draw_offs + 1] ^= planeid;
+                                            self.vram[draw_offs + WIDTH] ^= planeid;
+                                            self.vram[draw_offs + WIDTH + 1] ^= planeid;
                                         }
                                     }
 
@@ -762,6 +752,8 @@ impl Chip8 {
                         }
                         src += num_bytes;
                     }
+
+                    planeid *= 2;
                 }
 
                 self.regs[0xf] = if xord { 1 } else { 0 };
