@@ -1,9 +1,13 @@
 use crate::constants::{FLAGS_FNAME, HEIGHT, WIDTH};
 
+use dynasmrt::{dynasm, DynasmApi, DynasmLabelApi, Assembler, ExecutableBuffer};
+use dynasmrt::x64::X64Relocation;
 use rand::rngs::ThreadRng;
 use rand::Rng;
+use std::cmp::min;
 use std::fs::File;
 use std::io::prelude::*;
+use std::mem;
 
 #[derive(PartialEq)]
 pub enum Chip8System {
@@ -13,9 +17,13 @@ pub enum Chip8System {
     XOCHIP,
 }
 
+struct Block {
+    code: ExecutableBuffer,
+}
+
 pub struct Chip8 {
-    pub mem: [u8; 0x10000],
-    pub vram: [u8; WIDTH * HEIGHT],
+    pub mem: Box<[u8]>,
+    pub vram: Box<[u8]>,
     pub i: u16,
     pub pc: u16,
     pub regs: [u8; 16],
@@ -46,13 +54,142 @@ pub struct Chip8 {
     pub quirk_disp_wait_lores: bool,
     pub quirk_scroll_full_lores: bool,
     pub quirk_16_colors: bool,
+
+    mems: Box<[Option<Block>]>,
+    try_jit: Box<[bool]>,
+    inf_loop: bool,
+    jit_cyc: i32,
+}
+
+macro_rules! offset {
+    (@ $parent:path, $field:tt) => {
+        memoffset::offset_of!($parent, $field)
+    };
+    (@ $parent:path, $field:tt : $next:path, $($tail:tt)*) => {
+        {
+            #[allow(dead_code)] fn is_eq(x: $parent) -> $next { x.$field }
+            memoffset::offset_of!($parent, $field)
+        }
+        + offset!(@ $next, $($tail)*)
+    };
+    ($parent:path, $field:tt : $next:path, $($tail:tt)*) => {
+        offset!(@ $parent, $field: $next, $($tail)*)
+    };
+    ($parent:path, $field:tt) => {
+        memoffset::offset_of!($parent, $field)
+    };
+}
+
+macro_rules! my_dynasm {
+    ($ops:ident $($t:tt)*) => {
+        dynasm!($ops
+            ; .arch x64
+            $($t)*
+        )
+    }
+}
+
+extern "sysv64" fn xo_rand(ch8: &mut Chip8, x: usize, nn: u8) {
+    ch8.regs[x] = ch8.rng.gen_range(0..=255) & nn;
+}
+
+extern "sysv64" fn xo_clear(ch8: &mut Chip8) {
+    // clear
+    let mask = 0xff - ch8.plane;
+    for i in 0..WIDTH * HEIGHT {
+        ch8.vram[i] &= mask;
+    }
+}
+
+extern "sysv64" fn xo_draw(ch8: &mut Chip8, x: usize, y: usize, byte_width: usize, num_bytes: usize) {
+    // sprite vx vy N
+    let mut xord = false;
+    let mut startx = ch8.regs[x] as usize;
+    let mut starty = ch8.regs[y] as usize;
+
+    // Emulate chip-8 as if schip/xo-chip
+    if !ch8.hires {
+        startx *= 2;
+        starty *= 2;
+    }
+
+    startx %= WIDTH;
+    starty %= HEIGHT;
+
+    let mut src = ch8.i as usize;
+
+    let mut planeid = 1;
+    while planeid < 16 {
+        if (ch8.plane & planeid) != 0 {
+            let mut drawy = starty;
+            let mut i: usize = 0;
+            while i < num_bytes {
+                let mut drawx = startx;
+
+                for _ in 0..byte_width {
+                    let mut byte = ch8.mem[src + i];
+                    i += 1;
+
+                    let mut j: usize = 0;
+                    while j < 8 {
+                        let bit_set = (byte & 0x80) != 0;
+                        byte <<= 1;
+
+                        // no clip, ie wrap
+                        drawx %= WIDTH;
+                        let draw_offs = drawy * WIDTH + drawx;
+                        if bit_set {
+                            if ch8.hires {
+                                if (ch8.vram[draw_offs] & planeid) != 0 {
+                                    xord = true;
+                                }
+                                ch8.vram[draw_offs] ^= planeid;
+                            } else {
+                                // plot 2x2
+                                if ((ch8.vram[draw_offs] & planeid)
+                                    + (ch8.vram[draw_offs + 1] & planeid)
+                                    + (ch8.vram[draw_offs + WIDTH] & planeid)
+                                    + (ch8.vram[draw_offs + WIDTH + 1] & planeid))
+                                    != 0
+                                {
+                                    xord = true;
+                                }
+                                ch8.vram[draw_offs] ^= planeid;
+                                ch8.vram[draw_offs + 1] ^= planeid;
+                                ch8.vram[draw_offs + WIDTH] ^= planeid;
+                                ch8.vram[draw_offs + WIDTH + 1] ^= planeid;
+                            }
+                        }
+
+                        drawx += if ch8.hires { 1 } else { 2 };
+                        j += 1;
+                    }
+                }
+
+                drawy += if ch8.hires { 1 } else { 2 };
+                if drawy == HEIGHT {
+                    drawy = 0;
+                }
+            }
+            src += num_bytes;
+        }
+
+        planeid *= 2;
+    }
+
+    ch8.regs[0xf] = if xord { 1 } else { 0 };
 }
 
 impl Chip8 {
     pub fn new() -> Self {
+        let mut mems: Vec<Option<Block>> = vec![];
+        for _ in 0..0x4000 {
+            mems.push(None);
+        }
+
         let mut ret = Self {
-            mem: [0; 0x10000],
-            vram: [0; WIDTH * HEIGHT],
+            mem: vec!(0; 0x10000).into_boxed_slice(),
+            vram: vec!(0; WIDTH * HEIGHT).into_boxed_slice(),
             i: 0,
             pc: 0x200,
             regs: [0; 16],
@@ -82,7 +219,12 @@ impl Chip8 {
             quirk_jumping: false,
             quirk_disp_wait_lores: false,
             quirk_scroll_full_lores: false,
-            quirk_16_colors: false,
+            quirk_16_colors: true,
+
+            mems: mems.into_boxed_slice(),
+            try_jit: vec!(true; 0x4000).into_boxed_slice(),
+            inf_loop: false,
+            jit_cyc: 0,
         };
 
         let font: [u8; 0x50] = [
@@ -131,7 +273,7 @@ impl Chip8 {
             ret.mem[0xa0 + i] = *b;
         }
 
-        ret.set_system(Chip8System::CHIP8);
+        ret.set_system(Chip8System::XOCHIP);
 
         ret
     }
@@ -318,6 +460,774 @@ impl Chip8 {
         }
 
         ret
+    }
+
+    fn compile_ins(&mut self, ops: &mut Assembler<X64Relocation>, pc: u16) -> u16 {
+        // Return: PC to next inspect OR 0xffff to exit the block
+        let op = ((self.mem[pc as usize] as u16) << 8) | (self.mem[pc as usize + 1] as u16);
+        let orig_pc = pc;
+        let pc = pc + 2;
+
+        let n0 = op >> 12;
+        let x = (op >> 8) & 0xf;
+        let y = (op >> 4) & 0xf;
+        let nnn = op & 0xfff;
+        let nn = op & 0xff;
+        let n = op & 0xf;
+
+        match n0 {
+            0x0 => {
+                match nnn {
+                    0x0c0..=0x0cf => {
+                        // todo: scroll-down n
+                    }
+                    0x0d0..=0x0df => {
+                        // todo: scroll-up n
+                    }
+                    0x0e0 => {
+                        // clear
+                        let this = self as *mut Chip8;
+                        my_dynasm!(ops
+                            ; push rdi
+                            ; mov rdi, QWORD this as i64
+                            ; mov rax, QWORD xo_clear as i64
+                            ; call rax
+                            ; pop rdi
+                        );
+                    }
+                    0x0ee => {
+                        // return
+                        let sp_offs = offset!(Chip8, sp);
+                        let stack_offs = offset!(Chip8, stack);
+                        let pc_offs = offset!(Chip8, pc);
+                        my_dynasm!(ops
+                            ; sub BYTE [rdi+sp_offs as i32], 1
+                            ; movzx rax, BYTE [rdi+sp_offs as i32]
+                            ; mov ax, WORD [rdi+rax*2+stack_offs as i32]
+                            ; mov WORD [rdi+pc_offs as i32], ax
+                            ; add r9, self.jit_cyc
+                            ; jmp >end
+                        );
+                        return 0xffff;
+                    }
+                    0x0fb => {
+                        // todo: scroll-right
+                    }
+                    0x0fc => {
+                        // todo: scroll-left
+                    }
+                    0x0fd => {
+                        // exit
+                        panic!("Exit");
+                    }
+                    0x0fe => {
+                        // lores
+                        let hires_offs = offset!(Chip8, hires);
+                        my_dynasm!(ops
+                            ; mov BYTE [rdi+hires_offs as i32], 0
+                        );
+                    }
+                    0x0ff => {
+                        // hires
+                        let hires_offs = offset!(Chip8, hires);
+                        my_dynasm!(ops
+                            ; mov BYTE [rdi+hires_offs as i32], 1
+                        );
+                    }
+                    _ => panic!("Can't compile instruction: {:04x}", op)
+                }
+            }
+            0x1 => {
+                // jump nnn
+                let pc_offs = offset!(Chip8, pc);
+                my_dynasm!(ops
+                    ; mov WORD [rdi+pc_offs as i32], nnn as i16
+                    ; add r9, self.jit_cyc
+                    ; jmp >end
+                );
+                if nnn == orig_pc {
+                    self.inf_loop = true;
+                }
+                return 0xffff;
+            }
+            0x2 => {
+                // call nnn
+                let sp_offs = offset!(Chip8, sp);
+                let stack_offs = offset!(Chip8, stack);
+                let pc_offs = offset!(Chip8, pc);
+                my_dynasm!(ops
+                    ; movzx rax, BYTE [rdi+sp_offs as i32]
+                    ; mov bx, pc as i16
+                    ; mov WORD [rdi+rax*2+stack_offs as i32], bx
+                    ; add BYTE [rdi+sp_offs as i32], 1
+                    ; mov WORD [rdi+pc_offs as i32], nnn as i16
+                    ; add r9, self.jit_cyc
+                    ; jmp >end
+                );
+                return 0xffff;
+            }
+            0x3 => {
+                // if vx != nn then
+                let rx_offs = offset!(Chip8, regs) + x as usize;
+                if self.jittable(pc) {
+                    my_dynasm!(ops
+                        ; cmp BYTE [rdi+rx_offs as i32], nn as i8
+                        ; je >branch
+                    );
+                    return self.compile_branch_inline(ops, pc);
+                } else {
+                    my_dynasm!(ops
+                        ; cmp BYTE [rdi+rx_offs as i32], nn as i8
+                        ; jne >branch
+                    );
+                    return self.compile_branch_non_inline(ops);
+                }
+            }
+            0x4 => {
+                // if vx == nn then
+                let rx_offs = offset!(Chip8, regs) + x as usize;
+                if self.jittable(pc) {
+                    my_dynasm!(ops
+                        ; cmp BYTE [rdi+rx_offs as i32], nn as i8
+                        ; jne >branch
+                    );
+                    return self.compile_branch_inline(ops, pc);
+                } else {
+                    my_dynasm!(ops
+                        ; cmp BYTE [rdi+rx_offs as i32], nn as i8
+                        ; je >branch
+                    );
+                    return self.compile_branch_non_inline(ops);
+                }
+            }
+            0x5 => {
+                match n {
+                    0 => {
+                        // if vx != vy then
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let ry_offs = offset!(Chip8, regs) + y as usize;
+                        if self.jittable(pc) {
+                            my_dynasm!(ops
+                                ; mov al, BYTE [rdi+ry_offs as i32]
+                                ; cmp BYTE [rdi+rx_offs as i32], al
+                                ; je >branch
+                            );
+                            return self.compile_branch_inline(ops, pc);
+                        } else {
+                            my_dynasm!(ops
+                                ; mov al, BYTE [rdi+ry_offs as i32]
+                                ; cmp BYTE [rdi+rx_offs as i32], al
+                                ; jne >branch
+                            );
+                            return self.compile_branch_non_inline(ops);
+                        }
+                    }
+                    2 => {
+                        // save vx - vy
+                        let regs_offs = offset!(Chip8, regs) + x as usize;
+                        let mem_offs = offset!(Chip8, mem);
+                        let i_offs = offset!(Chip8, i);
+                        my_dynasm!(ops
+                            ; mov rbx, regs_offs as i32
+                            ; movzx rsi, WORD [rdi+i_offs as i32]
+                            ; mov rax, QWORD [rdi+mem_offs as i32]
+                            ; add rsi, rax
+                            ; mov al, (y-x + 1) as i8
+                            ;next_reg:
+                            ; mov cl, BYTE [rdi+rbx]
+                            ; mov BYTE [rsi], cl
+                            ; inc rsi
+                            ; inc bl
+                            ; dec al
+                            ; jnz <next_reg
+                            ; add WORD [rdi+i_offs as i32], (y-x + 1) as i16
+                        );
+                    }
+                    3 => {
+                        // load vx - vy
+                        let regs_offs = offset!(Chip8, regs) + x as usize;
+                        let mem_offs = offset!(Chip8, mem);
+                        let i_offs = offset!(Chip8, i);
+                        my_dynasm!(ops
+                            ; mov rbx, regs_offs as i32
+                            ; movzx rsi, WORD [rdi+i_offs as i32]
+                            ; mov rax, QWORD [rdi+mem_offs as i32]
+                            ; add rsi, rax
+                            ; mov al, (y-x + 1) as i8
+                            ;next_reg:
+                            ; mov cl, BYTE [rsi]
+                            ; mov BYTE [rdi+rbx], cl
+                            ; inc rsi
+                            ; inc bl
+                            ; dec al
+                            ; jnz <next_reg
+                            ; add WORD [rdi+i_offs as i32], (y-x + 1) as i16
+                        );
+                    }
+                    _ => panic!("Can't compile instruction: {:04x}", op)
+                }
+            }
+            0x6 => {
+                // vx := nn
+                let rx_offs = offset!(Chip8, regs) + x as usize;
+                my_dynasm!(ops
+                    ; mov BYTE [rdi+rx_offs as i32], nn as i8
+                );
+            }
+            0x7 => {
+                // vx += nn
+                let rx_offs = offset!(Chip8, regs) + x as usize;
+                my_dynasm!(ops
+                    ; add BYTE [rdi+rx_offs as i32], nn as i8
+                );
+            }
+            0x8 => {
+                match n {
+                    0x0 => {
+                        // vx := vy
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let ry_offs = offset!(Chip8, regs) + y as usize;
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+ry_offs as i32]
+                            ; mov BYTE [rdi+rx_offs as i32], al
+                        );
+                    }
+                    0x1 => {
+                        // vx |= vy
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let ry_offs = offset!(Chip8, regs) + y as usize;
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+ry_offs as i32]
+                            ; or BYTE [rdi+rx_offs as i32], al
+                        );
+                    }
+                    0x2 => {
+                        // vx &= vy
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let ry_offs = offset!(Chip8, regs) + y as usize;
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+ry_offs as i32]
+                            ; and BYTE [rdi+rx_offs as i32], al
+                        );
+                    }
+                    0x3 => {
+                        // vx ^= vy
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let ry_offs = offset!(Chip8, regs) + y as usize;
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+ry_offs as i32]
+                            ; xor BYTE [rdi+rx_offs as i32], al
+                        );
+                    }
+                    0x4 => {
+                        // vx += vy
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let ry_offs = offset!(Chip8, regs) + y as usize;
+                        let r_f_offs = offset!(Chip8, regs) + 0xf;
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+ry_offs as i32]
+                            ; add BYTE [rdi+rx_offs as i32], al
+                            ; mov al, 1
+                            ; jc >carry
+                            ; mov al, 0
+                            ;carry:
+                            ; mov BYTE [rdi+r_f_offs as i32], al
+                        );
+                    }
+                    0x5 => {
+                        // vx -= vy
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let ry_offs = offset!(Chip8, regs) + y as usize;
+                        let r_f_offs = offset!(Chip8, regs) + 0xf;
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+ry_offs as i32]
+                            ; sub BYTE [rdi+rx_offs as i32], al
+                            ; mov al, 0
+                            ; jc >carry
+                            ; mov al, 1
+                            ;carry:
+                            ; mov BYTE [rdi+r_f_offs as i32], al
+                        );
+                    }
+                    0x6 => {
+                        // vx >>= vy
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let ry_offs = offset!(Chip8, regs) + y as usize;
+                        let r_f_offs = offset!(Chip8, regs) + 0xf;
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+ry_offs as i32]
+                            ; shr al, 1
+                            ; mov BYTE [rdi+rx_offs as i32], al
+                            ; mov al, 1
+                            ; jc >carry
+                            ; mov al, 0
+                            ;carry:
+                            ; mov BYTE [rdi+r_f_offs as i32], al
+                        );
+                    }
+                    0x7 => {
+                        // vx =- vy
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let ry_offs = offset!(Chip8, regs) + y as usize;
+                        let r_f_offs = offset!(Chip8, regs) + 0xf;
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+ry_offs as i32]
+                            ; sub al, BYTE [rdi+rx_offs as i32]
+                            ; mov BYTE [rdi+rx_offs as i32], al
+                            ; mov al, 0
+                            ; jc >carry
+                            ; mov al, 1
+                            ;carry:
+                            ; mov BYTE [rdi+r_f_offs as i32], al
+                        );
+                    }
+                    0xe => {
+                        // vx <<= vy
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let ry_offs = offset!(Chip8, regs) + y as usize;
+                        let r_f_offs = offset!(Chip8, regs) + 0xf;
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+ry_offs as i32]
+                            ; shl al, 1
+                            ; mov BYTE [rdi+rx_offs as i32], al
+                            ; mov al, 1
+                            ; jc >carry
+                            ; mov al, 0
+                            ;carry:
+                            ; mov BYTE [rdi+r_f_offs as i32], al
+                        );
+                    }
+                    _ => panic!("Can't compile instruction: {:04x}", op)
+                }
+            }
+            0x9 => {
+                if n == 0 {
+                    // if vx == vy then
+                    let rx_offs = offset!(Chip8, regs) + x as usize;
+                    let ry_offs = offset!(Chip8, regs) + y as usize;
+                    if self.jittable(pc) {
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+ry_offs as i32]
+                            ; cmp BYTE [rdi+rx_offs as i32], al
+                            ; jne >branch
+                        );
+                        return self.compile_branch_inline(ops, pc);
+                    } else {
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+ry_offs as i32]
+                            ; cmp BYTE [rdi+rx_offs as i32], al
+                            ; je >branch
+                        );
+                        return self.compile_branch_non_inline(ops);
+                    }
+                } else {
+                    panic!("Can't compile instruction: {:04x}", op);
+                }
+            }
+            0xa => {
+                // i := nnn
+                let i_offs = offset!(Chip8, i);
+
+                // Simple implementation if SMC wasn't a thing
+                // my_dynasm!(ops
+                //     ; mov WORD [rdi+i_offs as i32], nnn as i16
+                // );
+
+                let mem_offs = offset!(Chip8, mem);
+                my_dynasm!(ops
+                    ; mov rsi, orig_pc as i32
+                    ; add rsi, QWORD [rdi+mem_offs as i32]
+                    ; mov ah, BYTE [rsi]
+                    ; mov al, BYTE [rsi+1]
+                    ; and ax, 0xfff
+                    ; mov WORD [rdi+i_offs as i32], ax
+                );
+            }
+            0xb => {
+                // todo: jump0 nnn
+                // self.pc = nnn + self.regs[0] as u16;
+            }
+            0xc => {
+                // vx := random nn
+                let this = self as *mut Chip8;
+                my_dynasm!(ops
+                    ; push rdi
+                    ; mov rdi, QWORD this as i64
+                    ; mov rsi, x as i32
+                    ; mov rdx, nn as i32
+                    ; mov rax, QWORD xo_rand as i64
+                    ; call rax
+                    ; pop rdi
+                );
+            }
+            0xd => {
+                // sprite vx vy N
+                let this = self as *mut Chip8;
+                let (byte_width, num_bytes) = if n == 0 { (2, 32) } else { (1, n) };
+                my_dynasm!(ops
+                    ; push rdi
+                    ; mov rdi, QWORD this as i64
+                    ; mov rsi, x as i32
+                    ; mov rdx, y as i32
+                    ; mov rcx, byte_width as i32
+                    ; mov r8, num_bytes as i32
+                    ; mov rax, QWORD xo_draw as i64
+                    ; call rax
+                    ; pop rdi
+                );
+            }
+            0x0e => {
+                match nn {
+                    0x9e => {
+                        // if vx -key then
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let keys_held_offs = offset!(Chip8, keys_held);
+                        if self.jittable(pc) {
+                            my_dynasm!(ops
+                                ; movzx rsi, BYTE [rdi+rx_offs as i32]
+                                ; add rsi, keys_held_offs as i32
+                                ; cmp BYTE [rdi+rsi], 0
+                                ; jne >branch
+                            );
+                            return self.compile_branch_inline(ops, pc);
+                        } else {
+                            my_dynasm!(ops
+                                ; movzx rsi, BYTE [rdi+rx_offs as i32]
+                                ; add rsi, keys_held_offs as i32
+                                ; cmp BYTE [rdi+rsi], 0
+                                ; je >branch
+                            );
+                            return self.compile_branch_non_inline(ops);
+                        }
+                    }
+                    0xa1 => {
+                        // if vx key then
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let keys_held_offs = offset!(Chip8, keys_held);
+                        if self.jittable(pc) {
+                            my_dynasm!(ops
+                                ; movzx rsi, BYTE [rdi+rx_offs as i32]
+                                ; add rsi, keys_held_offs as i32
+                                ; cmp BYTE [rdi+rsi], 0
+                                ; je >branch
+                            );
+                            return self.compile_branch_inline(ops, pc);
+                        } else {
+                            my_dynasm!(ops
+                                ; movzx rsi, BYTE [rdi+rx_offs as i32]
+                                ; add rsi, keys_held_offs as i32
+                                ; cmp BYTE [rdi+rsi], 0
+                                ; jne >branch
+                            );
+                            return self.compile_branch_non_inline(ops);
+                        }
+                    }
+                    _ => panic!("Can't compile instruction: {:04x}", op)
+                }
+            }
+            0xf => {
+                match nn {
+                    0x00 => {
+                        if x == 0 {
+                            // i := long nnnn
+                            let i_offs = offset!(Chip8, i);
+
+                            // Simple implementation if SMC wasn't a thing
+                            // let nnnn = ((self.mem[pc as usize] as u16) << 8) | (self.mem[pc as usize + 1] as u16);
+                            // my_dynasm!(ops
+                            //     ; mov WORD [rdi+i_offs as i32], nnnn as i16
+                            // );
+
+                            let mem_offs = offset!(Chip8, mem);
+                            my_dynasm!(ops
+                                ; mov rsi, pc as i32
+                                ; add rsi, QWORD [rdi+mem_offs as i32]
+                                ; mov ah, BYTE [rsi]
+                                ; mov al, BYTE [rsi+1]
+                                ; mov WORD [rdi+i_offs as i32], ax
+                            );
+
+                            return pc+2;
+                        }
+                    }
+                    0x01 => {
+                        // plane x
+                    }
+                    0x07 => {
+                        // vx := delay
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let delay_offs = offset!(Chip8, delay);
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+delay_offs as i32]
+                            ; mov BYTE [rdi+rx_offs as i32], al
+                        );
+                    }
+                    0x0a => {
+                        // vx := key
+                        let halted_offs = offset!(Chip8, halted);
+                        let halt_reg_offs = offset!(Chip8, halt_reg);
+                        let halt_wait_for_release_offs = offset!(Chip8, halt_wait_for_release);
+                        let pc_offs = offset!(Chip8, pc);
+                        my_dynasm!(ops
+                            ; mov BYTE [rdi+halted_offs as i32], true as i8
+                            ; mov BYTE [rdi+halt_reg_offs as i32], x as i8
+                            ; mov BYTE [rdi+halt_wait_for_release_offs as i32], false as i8
+                            ; mov WORD [rdi+pc_offs as i32], orig_pc as i16
+                            ; add r9, self.jit_cyc
+                            ; jmp >end
+                        );
+                        return 0xffff;
+                    }
+                    0x15 => {
+                        // delay := vx
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let delay_offs = offset!(Chip8, delay);
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+rx_offs as i32]
+                            ; mov BYTE [rdi+delay_offs as i32], al
+                        );
+                    }
+                    0x18 => {
+                        // buzzer := vx
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let buzzer_offs = offset!(Chip8, sound);
+                        my_dynasm!(ops
+                            ; mov al, BYTE [rdi+rx_offs as i32]
+                            ; mov BYTE [rdi+buzzer_offs as i32], al
+                        );
+                        // todo: start beep if non-0
+                    }
+                    0x1e => {
+                        // i += vx
+                        let i_offs = offset!(Chip8, i);
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        my_dynasm!(ops
+                            ; movzx ax, BYTE [rdi+rx_offs as i32]
+                            ; add WORD [rdi+i_offs as i32], ax
+                        );
+                    }
+                    0x29 => {
+                        // todo: i := hex vx
+                    }
+                    0x30 => {
+                        // todo: i := bighex vx
+                    }
+                    0x33 => {
+                        // bcd vx
+                        let i_offs = offset!(Chip8, i);
+                        let rx_offs = offset!(Chip8, regs) + x as usize;
+                        let mem_offs = offset!(Chip8, mem);
+                        my_dynasm!(ops
+                            ; movzx rsi, WORD [rdi+i_offs as i32]
+                            ; mov rax, QWORD [rdi+mem_offs as i32]
+                            ; add rsi, rax
+                            ; movzx ax, BYTE [rdi+rx_offs as i32]
+                            ; mov bl, 0x64
+                            ; div bl
+                            ; mov BYTE [rsi], al
+                            ; mov al, ah
+                            ; and ax, 0xff
+                            ; mov bl, 0x0a
+                            ; div bl
+                            ; mov BYTE [rsi+1], al
+                            ; mov BYTE [rsi+2], ah
+                        );
+                    }
+                    0x3a => {
+                        // todo: pitch := vx
+                    }
+                    0x55 => {
+                        // save vx
+                        let regs_offs = offset!(Chip8, regs);
+                        let mem_offs = offset!(Chip8, mem);
+                        let i_offs = offset!(Chip8, i);
+                        my_dynasm!(ops
+                            ; mov rbx, regs_offs as i32
+                            ; movzx rsi, WORD [rdi+i_offs as i32]
+                            ; mov rax, QWORD [rdi+mem_offs as i32]
+                            ; add rsi, rax
+                            ; mov al, (x + 1) as i8
+                            ;next_reg:
+                            ; mov cl, BYTE [rdi+rbx]
+                            ; mov BYTE [rsi], cl
+                            ; inc rsi
+                            ; inc bl
+                            ; dec al
+                            ; jnz <next_reg
+                            ; add WORD [rdi+i_offs as i32], (x + 1) as i16
+                        );
+                    }
+                    0x65 => {
+                        // load vx
+                        let regs_offs = offset!(Chip8, regs);
+                        let mem_offs = offset!(Chip8, mem);
+                        let i_offs = offset!(Chip8, i);
+                        my_dynasm!(ops
+                            ; mov rbx, regs_offs as i32
+                            ; movzx rsi, WORD [rdi+i_offs as i32]
+                            ; mov rax, QWORD [rdi+mem_offs as i32]
+                            ; add rsi, rax
+                            ; mov al, (x + 1) as i8
+                            ;next_reg:
+                            ; mov cl, BYTE [rsi]
+                            ; mov BYTE [rdi+rbx], cl
+                            ; inc rsi
+                            ; inc bl
+                            ; dec al
+                            ; jnz <next_reg
+                            ; add WORD [rdi+i_offs as i32], (x + 1) as i16
+                        );
+                    }
+                    0x75 => {
+                        // todo: saveflags vx
+                    }
+                    0x85 => {
+                        // todo: loadflags vx
+                    }
+                    _ => panic!("Can't compile instruction: {:04x}", op)
+                }
+            }
+            _ => panic!("Can't compile instruction: {:04x}", op)
+        };
+
+        pc
+    }
+
+    fn jittable(&self, pc: u16) -> bool {
+        if !self.try_jit[pc as usize] {
+            return false;
+        }
+
+        let op = ((self.mem[pc as usize] as u16) << 8) | (self.mem[pc as usize + 1] as u16);
+
+        let n0 = op >> 12;
+        // let x = (op >> 8) & 0xf;
+        // let y = (op >> 4) & 0xf;
+        let nnn = op & 0xfff;
+        let nn = op & 0xff;
+        let n = op & 0xf;
+
+        match n0 {
+            0x0 => {
+                match nnn {
+                    0x0e0 | 0x0ee | 0x0fe | 0x0ff => true,
+                    _ => false,
+                }
+            }
+            0x5 => {
+                match n {
+                    0 => true,
+                    _ => false,
+                }
+            }
+            0xf => {
+                match nn {
+                    0x00 | 0x07 | 0x0a | 0x15 | 0x18 | 0x1e | 0x33 | 0x55 | 0x65 => true,
+                    _ => false
+                }
+            }
+            0x1..=0x4 | 0x6..=0xa | 0xd..=0xe => true,
+            _ => false,
+        }
+    }
+
+    pub fn run_block(&mut self) -> i32 {
+        if self.halted || !self.try_jit[self.pc as usize] {
+            self.step();
+            return 1;
+        }
+
+        let fun = &self.mems[self.pc as usize];
+        match fun {
+            Some(blk) => {
+                let fun: extern "sysv64" fn(&mut Chip8) -> i32 = unsafe { mem::transmute(blk.code.as_ptr()) };
+                fun(self)
+            }
+            None => {
+                if !self.jittable(self.pc) {
+                    self.try_jit[self.pc as usize] = false;
+                    self.step();
+                    return 1;
+                }
+
+                let mut ops = dynasmrt::x64::Assembler::new().unwrap();
+
+                // Prolog - r9 holds the number of cycles used up
+                my_dynasm!(ops
+                    ; mov r9, 0
+                );
+
+                self.jit_cyc = 0;
+                let mut ret_pc = self.pc;
+                self.inf_loop = false;
+                loop {
+                    ret_pc = self.compile_ins(&mut ops, ret_pc);
+                    self.jit_cyc += 1;
+                    if ret_pc == 0xffff {
+                        break;
+                    }
+                    if !self.jittable(ret_pc) {
+                        break;
+                    }
+                }
+
+                // Ended because the next instruction is not jittable
+                if ret_pc != 0xffff {
+                    let pc_offs = offset!(Chip8, pc) as i32;
+                    my_dynasm!(ops
+                        ; mov WORD [rdi+pc_offs], ret_pc as i16
+                    );
+                }
+
+                if self.inf_loop {
+                    self.jit_cyc = 1_000_000;
+                }
+
+                my_dynasm!(ops
+                    ; add r9, self.jit_cyc
+                    ;end:
+                    ; mov rax, r9
+                    ; ret
+                );
+
+                let curr_pc = self.pc as usize;
+                let code = ops.finalize().unwrap();
+                // println!("PC: {:04x}, {:?}", curr_pc, code);
+                // println!("{:?}", code.bytes());
+
+                let fun: extern "sysv64" fn(&mut Chip8) -> i32 = unsafe { mem::transmute(code.as_ptr()) };
+                let cyc = fun(self);
+
+                self.mems[curr_pc] = Some(
+                    Block {
+                        code: code,
+                    }
+                );
+                
+                cyc
+            }
+        }
+    }
+
+    fn compile_branch_inline(&mut self, ops: &mut Assembler<X64Relocation>, pc: u16) -> u16 {
+        my_dynasm!(ops
+            ; add r9, 1
+        );
+        let ret_pc = self.compile_ins(ops, pc);
+        my_dynasm!(ops
+            ;branch:
+        );
+        if ret_pc == 0xffff {pc+2} else {ret_pc}
+    }
+
+    fn compile_branch_non_inline(&mut self, ops: &mut Assembler<X64Relocation>) -> u16 {
+        let pc_offs = offset!(Chip8, pc);
+        my_dynasm!(ops
+            ; add WORD [rdi+pc_offs as i32], 2
+            ;branch:
+            ; add WORD [rdi+pc_offs as i32], 2
+        );
+        return 0xffff;
     }
 
     pub fn step(&mut self) {
@@ -569,7 +1479,7 @@ impl Chip8 {
             }
             0x7 => {
                 // vx += nn
-                self.regs[x as usize] += nn as u8;
+                self.regs[x as usize] = self.regs[x as usize].overflowing_add(nn as u8).0;
             }
             0x8 => {
                 match n {
@@ -614,13 +1524,10 @@ impl Chip8 {
                     }
                     0x6 => {
                         // vx >>= vy
-                        let (carry, res) = if self.quirk_shifting {
-                            ((self.regs[x as usize] & 1) == 1, self.regs[x as usize] >> 1)
-                        } else {
-                            ((self.regs[y as usize] & 1) == 1, self.regs[y as usize] >> 1)
-                        };
-                        self.regs[x as usize] = res;
-                        self.regs[0xf] = if carry { 1 } else { 0 };
+                        let idx = if self.quirk_shifting {x as usize} else {y as usize};
+                        let carry = self.regs[idx] & 1;
+                        self.regs[x as usize] = self.regs[idx] >> 1;
+                        self.regs[0xf] = carry;
                     }
                     0x7 => {
                         // vx =- vy
@@ -631,19 +1538,10 @@ impl Chip8 {
                     }
                     0xe => {
                         // vx <<= vy
-                        let (carry, res) = if self.quirk_shifting {
-                            (
-                                (self.regs[x as usize] & 0x80) == 0x80,
-                                self.regs[x as usize] << 1,
-                            )
-                        } else {
-                            (
-                                (self.regs[y as usize] & 0x80) == 0x80,
-                                self.regs[y as usize] << 1,
-                            )
-                        };
-                        self.regs[x as usize] = res;
-                        self.regs[0xf] = if carry { 1 } else { 0 };
+                        let idx = if self.quirk_shifting {x as usize} else {y as usize};
+                        let carry = self.regs[idx] >> 7;
+                        self.regs[x as usize] = self.regs[idx] << 1;
+                        self.regs[0xf] = carry;
                     }
                     _ => panic!("Unknown opcode ${:04x}", op),
                 }
@@ -834,6 +1732,7 @@ impl Chip8 {
                     0x18 => {
                         // buzzer := vx
                         self.sound = self.regs[x as usize];
+                        // todo: start beep if non-0
                     }
                     0x1e => {
                         // i += vx
@@ -897,7 +1796,7 @@ impl Chip8 {
                         let x = if self.system == Chip8System::XOCHIP {
                             x
                         } else {
-                            x & 7
+                            min(x, 7)
                         };
 
                         // Get the current 16 flags, if the file exists
@@ -932,7 +1831,7 @@ impl Chip8 {
                         let x = if self.system == Chip8System::XOCHIP {
                             x
                         } else {
-                            x & 7
+                            min(x, 7)
                         };
 
                         match File::open(FLAGS_FNAME) {

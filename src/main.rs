@@ -161,7 +161,7 @@ fn main() -> Result<(), Error> {
             if chip8.paused {
                 ticks_left = 0;
             } else {
-                while ticks_left != 0 {
+                while ticks_left > 0 {
                     if !watchpoints.watchpoints.is_empty() {
                         let accesses = chip8.check_mem_access();
                         if watchpoints.check_mem_access(accesses) {
@@ -171,8 +171,18 @@ fn main() -> Result<(), Error> {
                         }
                     }
 
-                    chip8.step();
-                    ticks_left -= 1;
+                    // No JIT
+                    // chip8.step();
+                    // ticks_left -= 1;
+
+                    // JIT
+                    let cyc = chip8.run_block();
+                    ticks_left -= cyc;
+
+                    if chip8.halted {
+                        ticks_left = 0;
+                        break;
+                    }
 
                     if breakpoints.check(chip8.pc) && !chip8.halted {
                         chip8.paused = true;
@@ -188,7 +198,7 @@ fn main() -> Result<(), Error> {
                 }
             }
 
-            if ticks_left == 0 {
+            if ticks_left <= 0 {
                 ticks_left = system.ins_per_frame;
                 if chip8.delay != 0 {
                     chip8.delay -= 1;
@@ -196,7 +206,7 @@ fn main() -> Result<(), Error> {
                 if chip8.sound != 0 {
                     chip8.sound -= 1;
                     if chip8.sound == 0 {
-                        // todo: beep
+                        // todo: stop beep
                     }
                 }
             }
