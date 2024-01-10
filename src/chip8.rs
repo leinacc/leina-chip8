@@ -557,8 +557,7 @@ impl Chip8 {
                 let pc_offs = offset!(Chip8, pc);
                 my_dynasm!(ops
                     ; movzx rax, BYTE [rdi+sp_offs as i32]
-                    ; mov bx, pc as i16
-                    ; mov WORD [rdi+rax*2+stack_offs as i32], bx
+                    ; mov WORD [rdi+rax*2+stack_offs as i32], pc as i16
                     ; add BYTE [rdi+sp_offs as i32], 1
                     ; mov WORD [rdi+pc_offs as i32], nnn as i16
                     ; add r9, self.jit_cyc
@@ -628,6 +627,7 @@ impl Chip8 {
                         let mem_offs = offset!(Chip8, mem);
                         let i_offs = offset!(Chip8, i);
                         my_dynasm!(ops
+                            ; push rbx
                             ; mov rbx, regs_offs as i32
                             ; movzx rsi, WORD [rdi+i_offs as i32]
                             ; mov rax, QWORD [rdi+mem_offs as i32]
@@ -641,6 +641,7 @@ impl Chip8 {
                             ; dec al
                             ; jnz <next_reg
                             ; add WORD [rdi+i_offs as i32], (y-x + 1) as i16
+                            ; pop rbx
                         );
                     }
                     3 => {
@@ -649,6 +650,7 @@ impl Chip8 {
                         let mem_offs = offset!(Chip8, mem);
                         let i_offs = offset!(Chip8, i);
                         my_dynasm!(ops
+                            ; push rbx
                             ; mov rbx, regs_offs as i32
                             ; movzx rsi, WORD [rdi+i_offs as i32]
                             ; mov rax, QWORD [rdi+mem_offs as i32]
@@ -662,6 +664,7 @@ impl Chip8 {
                             ; dec al
                             ; jnz <next_reg
                             ; add WORD [rdi+i_offs as i32], (y-x + 1) as i16
+                            ; pop rbx
                         );
                     }
                     _ => panic!("Can't compile instruction: {:04x}", op)
@@ -1018,6 +1021,7 @@ impl Chip8 {
                         let rx_offs = offset!(Chip8, regs) + x as usize;
                         let mem_offs = offset!(Chip8, mem);
                         my_dynasm!(ops
+                            ; push rbx
                             ; movzx rsi, WORD [rdi+i_offs as i32]
                             ; mov rax, QWORD [rdi+mem_offs as i32]
                             ; add rsi, rax
@@ -1031,6 +1035,7 @@ impl Chip8 {
                             ; div bl
                             ; mov BYTE [rsi+1], al
                             ; mov BYTE [rsi+2], ah
+                            ; pop rbx
                         );
                     }
                     0x3a => {
@@ -1042,6 +1047,7 @@ impl Chip8 {
                         let mem_offs = offset!(Chip8, mem);
                         let i_offs = offset!(Chip8, i);
                         my_dynasm!(ops
+                            ; push rbx
                             ; mov rbx, regs_offs as i32
                             ; movzx rsi, WORD [rdi+i_offs as i32]
                             ; mov rax, QWORD [rdi+mem_offs as i32]
@@ -1055,6 +1061,7 @@ impl Chip8 {
                             ; dec al
                             ; jnz <next_reg
                             ; add WORD [rdi+i_offs as i32], (x + 1) as i16
+                            ; pop rbx
                         );
                     }
                     0x65 => {
@@ -1063,6 +1070,7 @@ impl Chip8 {
                         let mem_offs = offset!(Chip8, mem);
                         let i_offs = offset!(Chip8, i);
                         my_dynasm!(ops
+                            ; push rbx
                             ; mov rbx, regs_offs as i32
                             ; movzx rsi, WORD [rdi+i_offs as i32]
                             ; mov rax, QWORD [rdi+mem_offs as i32]
@@ -1076,6 +1084,7 @@ impl Chip8 {
                             ; dec al
                             ; jnz <next_reg
                             ; add WORD [rdi+i_offs as i32], (x + 1) as i16
+                            ; pop rbx
                         );
                     }
                     0x75 => {
@@ -1161,8 +1170,8 @@ impl Chip8 {
                 let mut ret_pc = self.pc;
                 self.inf_loop = false;
                 loop {
-                    ret_pc = self.compile_ins(&mut ops, ret_pc);
                     self.jit_cyc += 1;
+                    ret_pc = self.compile_ins(&mut ops, ret_pc);
                     if ret_pc == 0xffff {
                         break;
                     }
